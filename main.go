@@ -4,13 +4,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 )
 
-const version = "0.1.0"
+const version = "0.1.2"
 
 type episode struct {
 	fileName string
@@ -22,6 +24,8 @@ func main() {
 	showVersion := flag.Bool("version", false, "Show version")
 	series := flag.String("series", "", "Series name")
 	season := flag.Int("season", 0, "Season number")
+	forceFolder := flag.Bool("force_folder", false, "Proceed even if folder already exists")
+	replaceTitle := flag.Bool("replace_title", false, "Replate the metadata title with file name")
 	flag.Parse()
 
 	if *showVersion {
@@ -38,7 +42,7 @@ func main() {
 
 	targetFolderName := fmt.Sprintf("Season %02d", *season)
 
-	newFolderPath, err := renameFolder(folder, targetFolderName)
+	newFolderPath, err := renameFolder(folder, targetFolderName, *forceFolder)
 	if err != nil {
 		fmt.Println("Error renaming folder:", err)
 		return
@@ -55,28 +59,38 @@ func main() {
 	})
 
 	for _, episode := range episodes {
-		ext := filepath.Ext(episode.fileName)
-		targetName := fmt.Sprintf("%s S%02dE%02d%s", *series, *season, episode.number, ext)
-		if targetName == episode.fileName {
-			continue
-		}
+		ext := strings.ToLower(filepath.Ext(episode.fileName))
+		targetName := fmt.Sprintf("%s S%02dE%02d", *series, *season, episode.number)
+		targetFileName := targetName + ext
 
 		srcPath := filepath.Join(newFolderPath, episode.fileName)
-		newPath := filepath.Join(newFolderPath, targetName)
-		if err := os.Rename(srcPath, newPath); err != nil {
-			fmt.Println("Error renaming episode:", err)
+		newPath := filepath.Join(newFolderPath, targetFileName)
+		if targetFileName != episode.fileName {
+			if err := os.Rename(srcPath, newPath); err != nil {
+				fmt.Println("Error renaming episode:", err)
+			}
+			fmt.Printf("%s -> %s\n", episode.fileName, targetFileName)
 		}
-		fmt.Printf("%s -> %s\n", episode.fileName, targetName)
+
+		if ext == ".mkv" && *replaceTitle {
+			if err := modifyMkvTitle(newPath, targetName); err != nil {
+				fmt.Println("Error modifying title:", err)
+			}
+			fmt.Printf("Title modified in %s\n", targetFileName)
+		}
 	}
 }
 
-func renameFolder(folderPath, newName string) (string, error) {
+func renameFolder(folderPath string, newName string, force bool) (string, error) {
 	parentDir := filepath.Dir(folderPath)
 	newPath := filepath.Join(parentDir, newName)
 
 	// Check if target already exists
 	if _, err := os.Stat(newPath); err == nil {
-		return "", fmt.Errorf("target folder already exists: '%s'", newName)
+		if !force {
+			return "", fmt.Errorf("target folder already exists: '%s'", newName)
+		}
+		return newPath, nil
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("error checking target folder: %w", err)
 	}
@@ -115,4 +129,16 @@ func listEpisodeFiles(folderPath string) ([]episode, error) {
 	}
 
 	return episodes, nil
+}
+
+func modifyMkvTitle(filepath string, newTitle string) error {
+	// To remove title completely, use --delete title
+	// To set new title, use --set title="new title"
+	args := []string{"--edit", "info", "--set", "title=" + newTitle}
+	if newTitle == "" {
+		args = []string{"--edit", "info", "--delete", "title"}
+	}
+
+	cmd := exec.Command("mkvpropedit", append([]string{filepath}, args...)...)
+	return cmd.Run()
 }
